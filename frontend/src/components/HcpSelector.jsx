@@ -15,9 +15,10 @@ export default function HcpSelector() {
 
   const handleSeed = async () => {
     await dispatch(seedDatabase());
-    await dispatch(fetchHcps());
-    if (hcps.length > 0) {
-      const firstHcp = hcps[0].id;
+    const result = await dispatch(fetchHcps());
+    const freshHcps = result.payload;
+    if (Array.isArray(freshHcps) && freshHcps.length > 0) {
+      const firstHcp = freshHcps[0].id;
       dispatch(selectHcp(firstHcp));
       dispatch(fetchInteractions(firstHcp));
       dispatch(fetchTasks(firstHcp));

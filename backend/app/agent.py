@@ -292,10 +292,7 @@ def edit_interaction(
     try:
         interaction = db.query(Interaction).filter(Interaction.id == interaction_id).first()
         if not interaction:
-            # If no interaction is found, default to editing the latest interaction in the DB
-            interaction = db.query(Interaction).order_by(Interaction.date.desc()).first()
-            if not interaction:
-                return f"Error: No interactions found to edit."
+            return f"Error: Interaction with ID {interaction_id} not found."
 
         # Fetch the HCP
         hcp = db.query(HCP).filter(HCP.id == interaction.hcp_id).first()
@@ -650,7 +647,10 @@ def run_mock_agent(state: AgentState) -> AgentState:
         update_args["interaction_id"] = id_val
         update_args["notes"] = last_message
         edit_res = edit_interaction.invoke(update_args)
-        edit_data = json.loads(edit_res)
+        try:
+            edit_data = json.loads(edit_res)
+        except (json.JSONDecodeError, Exception):
+            edit_data = {"raw": edit_res}
         response_text = f"I have updated that field on the form! What would you like to do next?"
         suggested_actions.append({"type": "edit_interaction", "data": edit_data})
 
@@ -682,7 +682,10 @@ def run_mock_agent(state: AgentState) -> AgentState:
                 "time_str": time_str,
                 "notes": last_message
             })
-            edit_data = json.loads(edit_res)
+            try:
+                edit_data = json.loads(edit_res)
+            except (json.JSONDecodeError, Exception):
+                edit_data = {"raw": edit_res}
             response_text = "Got it! Would you like to schedule a next follow-up task? If so, please tell me the description and the next follow-up date (YYYY-MM-DD)."
             suggested_actions.append({"type": "edit_interaction", "data": edit_data})
             
@@ -725,7 +728,10 @@ def run_mock_agent(state: AgentState) -> AgentState:
                     "description": description,
                     "due_date_str": due_date_str
                 })
-                task_data = json.loads(task_res)
+                try:
+                    task_data = json.loads(task_res)
+                except (json.JSONDecodeError, Exception):
+                    task_data = {"raw": task_res}
                 
                 followup_text = f"Follow-up on {due_date_str}: {description}"
                 
