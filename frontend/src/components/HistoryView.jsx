@@ -13,6 +13,8 @@ export default function HistoryView() {
   const [editNotes, setEditNotes] = useState('');
   const [editSentiment, setEditSentiment] = useState('');
   const [editProducts, setEditProducts] = useState('');
+  const [editMaterials, setEditMaterials] = useState('');
+  const [editSamples, setEditSamples] = useState('');
   const [saving, setSaving] = useState(false);
 
   const handleOpenEdit = (log) => {
@@ -21,6 +23,8 @@ export default function HistoryView() {
     setEditNotes(log.notes);
     setEditSentiment(log.sentiment || 'Neutral');
     setEditProducts(log.products_discussed || '');
+    setEditMaterials(log.materials_shared || '');
+    setEditSamples(log.samples_distributed || '');
   };
 
   const handleCloseEdit = () => {
@@ -36,7 +40,9 @@ export default function HistoryView() {
       channel: editChannel,
       notes: editNotes,
       sentiment: editSentiment,
-      products_discussed: editProducts
+      products_discussed: editProducts,
+      materials_shared: editMaterials,
+      samples_distributed: editSamples
     };
 
     try {
@@ -122,6 +128,18 @@ export default function HistoryView() {
                         <span>Discussed: <strong>{log.products_discussed}</strong></span>
                       </div>
                     )}
+                    {log.materials_shared && log.materials_shared.trim() !== '' && (
+                      <div className="footer-detail-item">
+                        <Award size={12} />
+                        <span>Materials: <strong>{log.materials_shared}</strong></span>
+                      </div>
+                    )}
+                    {log.samples_distributed && log.samples_distributed.trim() !== '' && (
+                      <div className="footer-detail-item">
+                        <Award size={12} />
+                        <span>Samples: <strong>{log.samples_distributed}</strong></span>
+                      </div>
+                    )}
                     {log.next_steps && log.next_steps !== 'None' && (
                       <div className="footer-detail-item">
                         <ShieldAlert size={12} />
@@ -183,6 +201,26 @@ export default function HistoryView() {
                   value={editProducts} 
                   onChange={(e) => setEditProducts(e.target.value)} 
                   placeholder="e.g. Lipitor, Zestril"
+                />
+              </div>
+
+              <div className="form-field">
+                <label>Materials Shared (Comma-separated)</label>
+                <input 
+                  type="text" 
+                  value={editMaterials} 
+                  onChange={(e) => setEditMaterials(e.target.value)} 
+                  placeholder="e.g. Lipitor Brochure"
+                />
+              </div>
+
+              <div className="form-field">
+                <label>Samples Distributed (Comma-separated)</label>
+                <input 
+                  type="text" 
+                  value={editSamples} 
+                  onChange={(e) => setEditSamples(e.target.value)} 
+                  placeholder="e.g. Lipitor 10mg"
                 />
               </div>
 

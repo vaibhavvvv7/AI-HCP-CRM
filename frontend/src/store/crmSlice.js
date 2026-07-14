@@ -306,25 +306,41 @@ const crmSlice = createSlice({
       
       // Update form state if agent triggered a log_interaction or edit_interaction!
       if (suggested_actions && suggested_actions.length > 0) {
+        // Helper: treat "None" string and 0 rating as empty/unset
+        const clean = (val, fallback) => {
+          if (val === undefined || val === null) return fallback;
+          if (typeof val === 'string' && (val.trim() === 'None' || val.trim() === '')) return fallback;
+          return val;
+        };
+        const cleanRating = (val, fallback) => {
+          if (val === undefined || val === null || val === 0) return fallback;
+          return val;
+        };
+
         suggested_actions.forEach(actionItem => {
           if ((actionItem.type === 'log_interaction' || actionItem.type === 'edit_interaction') && actionItem.data) {
             const data = actionItem.data;
+            const isFirstLog = actionItem.type === 'log_interaction';
+
+            const newHcpName = clean(data.hcp_name, state.activeFormState.hcp_name);
+            const newPhone = clean(data.phone, state.activeFormState.phone);
+
             state.activeFormState = {
-              hcp_name: data.hcp_name !== undefined ? data.hcp_name : state.activeFormState.hcp_name,
-              phone: data.phone !== undefined ? data.phone : state.activeFormState.phone,
-              interaction_type: data.interaction_type !== undefined ? data.interaction_type : state.activeFormState.interaction_type,
-              date: data.date !== undefined ? data.date : state.activeFormState.date,
-              time: data.time !== undefined ? data.time : state.activeFormState.time,
-              attendees: data.attendees !== undefined ? data.attendees : state.activeFormState.attendees,
-              topics: data.topics !== undefined ? data.topics : state.activeFormState.topics,
-              materials_shared: data.materials_shared !== undefined ? data.materials_shared : state.activeFormState.materials_shared,
-              samples_distributed: data.samples_distributed !== undefined ? data.samples_distributed : state.activeFormState.samples_distributed,
-              sentiment: data.sentiment !== undefined ? data.sentiment : state.activeFormState.sentiment,
-              outcomes: data.outcomes !== undefined ? data.outcomes : state.activeFormState.outcomes,
-              followup_actions: data.followup_actions !== undefined ? data.followup_actions : state.activeFormState.followup_actions,
-              doctor_rating: data.doctor_rating !== undefined ? data.doctor_rating : state.activeFormState.doctor_rating,
-              feedback: data.feedback !== undefined ? data.feedback : state.activeFormState.feedback,
-              notes: data.notes !== undefined ? data.notes : state.activeFormState.notes,
+              hcp_name: newHcpName,
+              phone: newPhone,
+              interaction_type: clean(data.interaction_type, state.activeFormState.interaction_type),
+              date: clean(data.date, state.activeFormState.date),
+              time: clean(data.time, state.activeFormState.time),
+              attendees: clean(data.attendees, state.activeFormState.attendees),
+              topics: clean(data.topics, state.activeFormState.topics),
+              materials_shared: clean(data.materials_shared, state.activeFormState.materials_shared),
+              samples_distributed: clean(data.samples_distributed, state.activeFormState.samples_distributed),
+              sentiment: clean(data.sentiment, state.activeFormState.sentiment),
+              outcomes: clean(data.outcomes, state.activeFormState.outcomes),
+              followup_actions: clean(data.followup_actions, state.activeFormState.followup_actions),
+              doctor_rating: cleanRating(data.doctor_rating, state.activeFormState.doctor_rating),
+              feedback: clean(data.feedback, state.activeFormState.feedback),
+              notes: clean(data.notes, state.activeFormState.notes),
             };
           }
         });

@@ -43,6 +43,8 @@ class InteractionBase(BaseModel):
     products_discussed: Optional[str] = None
     doctor_rating: Optional[int] = None
     feedback: Optional[str] = None
+    materials_shared: Optional[str] = None
+    samples_distributed: Optional[str] = None
 
 class InteractionCreate(BaseModel):
     hcp_id: int
@@ -55,6 +57,8 @@ class InteractionCreate(BaseModel):
     products_discussed: Optional[str] = None
     doctor_rating: Optional[int] = None
     feedback: Optional[str] = None
+    materials_shared: Optional[str] = None
+    samples_distributed: Optional[str] = None
 
 class InteractionUpdate(BaseModel):
     date: Optional[datetime] = None
@@ -66,6 +70,8 @@ class InteractionUpdate(BaseModel):
     products_discussed: Optional[str] = None
     doctor_rating: Optional[int] = None
     feedback: Optional[str] = None
+    materials_shared: Optional[str] = None
+    samples_distributed: Optional[str] = None
 
 class InteractionResponse(InteractionBase):
     id: int

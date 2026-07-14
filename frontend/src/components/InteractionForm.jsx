@@ -1,11 +1,32 @@
-import React from 'react';
+import React, { useEffect, useRef } from 'react';
 import { useSelector, useDispatch } from 'react-redux';
 import { updateActiveFormState, logInteraction, resetActiveFormState } from '../store/crmSlice';
-import { Calendar, Clock, Users, Phone } from 'lucide-react';
+import { Calendar, Clock, Users, Phone, Sparkles } from 'lucide-react';
 
 export default function InteractionForm() {
   const dispatch = useDispatch();
   const { activeFormState, selectedHcpId } = useSelector((state) => state.crm);
+  const prevFormState = useRef(activeFormState);
+  const [flashFields, setFlashFields] = React.useState({});
+
+  // Detect which fields changed from agent updates and flash them
+  useEffect(() => {
+    const newFlash = {};
+    Object.keys(activeFormState).forEach(key => {
+      if (activeFormState[key] !== prevFormState.current[key] && activeFormState[key]) {
+        newFlash[key] = true;
+      }
+    });
+    if (Object.keys(newFlash).length > 0) {
+      setFlashFields(newFlash);
+      const timer = setTimeout(() => setFlashFields({}), 1800);
+      prevFormState.current = activeFormState;
+      return () => clearTimeout(timer);
+    }
+    prevFormState.current = activeFormState;
+  }, [activeFormState]);
+
+  const flashClass = (field) => flashFields[field] ? ' agent-updated-flash' : '';
 
   const handleChange = (field, value) => {
     dispatch(updateActiveFormState({ [field]: value }));
@@ -50,7 +71,9 @@ export default function InteractionForm() {
       doctor_rating: activeFormState.doctor_rating || null,
       feedback: activeFormState.feedback || null,
       summary: activeFormState.outcomes || null,
-      next_steps: activeFormState.followup_actions || null
+      next_steps: activeFormState.followup_actions || null,
+      materials_shared: activeFormState.materials_shared || '',
+      samples_distributed: activeFormState.samples_distributed || ''
     };
 
     try {
@@ -84,13 +107,14 @@ export default function InteractionForm() {
     <form onSubmit={handleSubmit} className="interaction-form-container glass-card split-left-panel">
       <div className="form-main-header">
         <h2>Log HCP Interaction</h2>
+        <div className="agent-fill-badge"><Sparkles size={12}/> AI Auto-fill</div>
       </div>
 
       <div className="form-section-group">
         <h3 className="section-title-label">Interaction Details</h3>
         
         <div className="form-grid-layout">
-          <div className="form-input-field">
+          <div className={`form-input-field${flashClass('hcp_name')}`}>
             <label>HCP Name</label>
             <input 
               type="text" 
@@ -100,7 +124,7 @@ export default function InteractionForm() {
             />
           </div>
 
-          <div className="form-input-field">
+          <div className={`form-input-field${flashClass('interaction_type')}`}>
             <label>Interaction Type</label>
             <select 
               value={activeFormState.interaction_type} 
@@ -113,7 +137,7 @@ export default function InteractionForm() {
             </select>
           </div>
 
-          <div className="form-input-field">
+          <div className={`form-input-field${flashClass('date')}`}>
             <label>Date</label>
             <div className="relative-input-container">
               <Calendar className="field-icon" size={14} />
@@ -125,7 +149,7 @@ export default function InteractionForm() {
             </div>
           </div>
 
-          <div className="form-input-field">
+          <div className={`form-input-field${flashClass('time')}`}>
             <label>Time</label>
             <div className="relative-input-container">
               <Clock className="field-icon" size={14} />
@@ -144,7 +168,7 @@ export default function InteractionForm() {
         <h3 className="section-title-label">Patient Details</h3>
         
         <div className="form-grid-layout">
-          <div className="form-input-field">
+          <div className={`form-input-field${flashClass('attendees')}`}>
             <label>Patient Name</label>
             <div className="relative-input-container">
               <Users className="field-icon" size={14} />
@@ -157,7 +181,7 @@ export default function InteractionForm() {
             </div>
           </div>
 
-          <div className="form-input-field">
+          <div className={`form-input-field${flashClass('phone')}`}>
             <label>Patient Phone Number</label>
             <div className="relative-input-container">
               <Phone className="field-icon" size={14} />
@@ -172,7 +196,7 @@ export default function InteractionForm() {
         </div>
       </div>
 
-      <div className="form-input-field full-width-field">
+      <div className={`form-input-field full-width-field${flashClass('topics')}`}>
         <label>Topics Discussed</label>
         <textarea 
           value={activeFormState.topics} 
@@ -209,7 +233,7 @@ export default function InteractionForm() {
       </div>
 
       <div className="form-grid-layout">
-        <div className="form-input-field">
+        <div className={`form-input-field${flashClass('sentiment')}`}>
           <label>Observed/Inferred HCP Sentiment</label>
           <div className="sentiment-radio-group">
             <label className={`sentiment-radio-label ${activeFormState.sentiment === 'Positive' ? 'selected-pos' : ''}`}>
@@ -250,7 +274,7 @@ export default function InteractionForm() {
           </div>
         </div>
 
-        <div className="form-input-field">
+        <div className={`form-input-field${flashClass('doctor_rating')}`}>
           <label>Doctor Rating (1-5 Scale)</label>
           <div className="rating-selector-buttons">
             {[1, 2, 3, 4, 5].map((num) => (
@@ -267,7 +291,7 @@ export default function InteractionForm() {
         </div>
       </div>
 
-      <div className="form-input-field full-width-field">
+      <div className={`form-input-field full-width-field${flashClass('outcomes')}`}>
         <label>Outcomes</label>
         <textarea 
           value={activeFormState.outcomes} 
@@ -277,7 +301,7 @@ export default function InteractionForm() {
         />
       </div>
 
-      <div className="form-input-field full-width-field">
+      <div className={`form-input-field full-width-field${flashClass('feedback')}`}>
         <label>Suggestions / Feedback</label>
         <textarea 
           value={activeFormState.feedback} 
@@ -287,7 +311,7 @@ export default function InteractionForm() {
         />
       </div>
 
-      <div className="form-input-field full-width-field">
+      <div className={`form-input-field full-width-field${flashClass('followup_actions')}`}>
         <label>Follow-up Actions</label>
         <textarea 
           value={activeFormState.followup_actions} 
@@ -297,7 +321,7 @@ export default function InteractionForm() {
         />
       </div>
 
-      <div className="form-input-field full-width-field">
+      <div className={`form-input-field full-width-field${flashClass('notes')}`}>
         <label>Discussion Notes</label>
         <textarea 
           value={activeFormState.notes || ''} 

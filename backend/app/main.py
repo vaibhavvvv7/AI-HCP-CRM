@@ -11,6 +11,22 @@ from .agent import chat_with_agent
 # Initialize database tables
 Base.metadata.create_all(bind=engine)
 
+# Programmatically upgrade existing DB schema to include materials_shared and samples_distributed columns
+from sqlalchemy import text
+from .database import SessionLocal
+try:
+    db = SessionLocal()
+    cursor = db.execute(text("PRAGMA table_info(interactions)"))
+    cols = [row[1] for row in cursor.fetchall()]
+    if "materials_shared" not in cols:
+        db.execute(text("ALTER TABLE interactions ADD COLUMN materials_shared TEXT"))
+    if "samples_distributed" not in cols:
+        db.execute(text("ALTER TABLE interactions ADD COLUMN samples_distributed TEXT"))
+    db.commit()
+    db.close()
+except Exception as e:
+    print(f"Database migration error: {e}")
+
 app = FastAPI(title="AI-First CRM HCP Module Backend")
 
 # Setup CORS
@@ -169,7 +185,9 @@ def create_interaction(interaction: schemas.InteractionCreate, db: Session = Dep
         summary=summary,
         sentiment=sentiment,
         next_steps=next_steps,
-        products_discussed=products_discussed
+        products_discussed=products_discussed,
+        materials_shared=interaction.materials_shared or "",
+        samples_distributed=interaction.samples_distributed or ""
     )
     db.add(db_interaction)
     db.commit()

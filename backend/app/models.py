@@ -41,6 +41,8 @@ class Interaction(Base):
     doctor_rating = Column(Integer, nullable=True) # Scale of 1-5
     feedback = Column(Text, nullable=True) # Suggestion or feedback
     attendees = Column(String, nullable=True) # Patient name
+    materials_shared = Column(String, nullable=True)
+    samples_distributed = Column(String, nullable=True)
 
     hcp = relationship("HCP", back_populates="interactions")
 

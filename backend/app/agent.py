@@ -213,7 +213,9 @@ def log_interaction(
             products_discussed=topics or "None",
             doctor_rating=doctor_rating,
             feedback=feedback,
-            attendees=attendees
+            attendees=attendees,
+            materials_shared=materials_shared or "",
+            samples_distributed=samples_distributed or ""
         )
         db.add(interaction)
         db.commit()
@@ -230,8 +232,8 @@ def log_interaction(
             "time": log_date.strftime("%I:%M %p"),
             "attendees": interaction.attendees or "",
             "topics": topics or interaction.products_discussed,
-            "materials_shared": materials_shared or "",
-            "samples_distributed": samples_distributed or "",
+            "materials_shared": interaction.materials_shared or "",
+            "samples_distributed": interaction.samples_distributed or "",
             "sentiment": sentiment,
             "outcomes": outcomes or "",
             "followup_actions": followup_actions or "",
@@ -331,6 +333,10 @@ def edit_interaction(
             interaction.feedback = feedback
         if attendees is not None:
             interaction.attendees = attendees
+        if materials_shared is not None:
+            interaction.materials_shared = materials_shared
+        if samples_distributed is not None:
+            interaction.samples_distributed = samples_distributed
  
         # Parse date and time if updated
         if date_str or time_str:
@@ -360,8 +366,8 @@ def edit_interaction(
             "time": interaction.date.strftime("%I:%M %p"),
             "attendees": interaction.attendees or "",
             "topics": topics or interaction.products_discussed,
-            "materials_shared": materials_shared or "",
-            "samples_distributed": samples_distributed or "",
+            "materials_shared": interaction.materials_shared or "",
+            "samples_distributed": interaction.samples_distributed or "",
             "sentiment": interaction.sentiment,
             "outcomes": outcomes or interaction.summary,
             "followup_actions": followup_actions or interaction.next_steps,
@@ -510,16 +516,34 @@ def run_mock_agent(state: AgentState) -> AgentState:
     
     last_message_lower = last_message.lower()
 
+    # Helper: detect when user intentionally skips a question
+    SKIP_PHRASES = {"nothing", "none", "n/a", "na", "nope", "skip", "no", "nil", "nothing else", "no feedback", "no thanks"}
+    def is_skip(text: str) -> bool:
+        t = text.strip().lower().rstrip('.')
+        return t in SKIP_PHRASES or t.startswith('nothing') and len(t) <= 20
+
     last_agent_message = ""
     questionnaire_prompts = [
         "name of the doctor you visited?",
         "reason for your visit or the topic discussed",
         "rate your satisfaction with the doctor",
         "additional feedback or suggestions",
-        "provide your name and phone number",
+        "were there any materials attached or shared?",
+        "what specific materials were attached or shared?",
+        "what is your name?",
+        "what is your phone number?",
         "lastly, was this consultation a meeting",
         "schedule a next follow-up task?",
-        "all your feedback has been logged in the form"
+        "all your feedback has been logged in the form",
+        "updated that field on the form",
+        "what would you like to update the doctor name to?",
+        "what would you like to update the patient name to?",
+        "what would you like to update the phone number to?",
+        "what would you like to update the materials shared to?",
+        "what would you like to update the doctor rating to (1-5)?",
+        "what would you like to update the feedback to?",
+        "what would you like to update the topics discussed to?",
+        "what would you like to update the interaction type to (meeting, call, virtual, email)?"
     ]
     
     for m in reversed(messages):
@@ -560,41 +584,110 @@ def run_mock_agent(state: AgentState) -> AgentState:
     # Helper to check if user wants to update a previously submitted field
     is_update = False
     update_args = {}
+    is_survey_completed = "all your feedback has been logged in the form" in last_agent_message
+
+    # Check clarifying reply parser
+    is_clarifying_reply = False
+    if "what would you like to update the doctor name to?" in last_agent_message:
+        update_args["hcp_name"] = last_message
+        is_update = True
+        is_clarifying_reply = True
+    elif "what would you like to update the patient name to?" in last_agent_message:
+        update_args["attendees"] = last_message
+        is_update = True
+        is_clarifying_reply = True
+    elif "what would you like to update the phone number to?" in last_agent_message:
+        update_args["phone"] = last_message
+        is_update = True
+        is_clarifying_reply = True
+    elif "what would you like to update the materials shared to?" in last_agent_message:
+        update_args["materials_shared"] = last_message
+        is_update = True
+        is_clarifying_reply = True
+    elif "what would you like to update the doctor rating to (1-5)?" in last_agent_message:
+        rating_match = re.search(r"\b([1-5])\b", last_message)
+        update_args["doctor_rating"] = int(rating_match.group(1)) if rating_match else 3
+        is_update = True
+        is_clarifying_reply = True
+    elif "what would you like to update the feedback to?" in last_agent_message:
+        update_args["feedback"] = last_message
+        is_update = True
+        is_clarifying_reply = True
+    elif "what would you like to update the topics discussed to?" in last_agent_message:
+        update_args["topics"] = last_message
+        is_update = True
+        is_clarifying_reply = True
+    elif "what would you like to update the interaction type to (meeting, call, virtual, email)?" in last_agent_message:
+        channel = "Meeting"
+        if "virtual" in last_message_lower or "zoom" in last_message_lower or "teams" in last_message_lower:
+            channel = "Virtual"
+        elif "phone" in last_message_lower or "call" in last_message_lower:
+            channel = "Call"
+        elif "email" in last_message_lower:
+            channel = "Email"
+        update_args["channel"] = channel
+        is_update = True
+        is_clarifying_reply = True
 
     # Check rating update
-    rating_match = re.search(r"(?:rating|rate|score|to)\s*\b([1-5])\b", last_message_lower)
-    if rating_match:
-        update_args["doctor_rating"] = int(rating_match.group(1))
-        is_update = True
+    if not is_clarifying_reply and "rate your satisfaction with the doctor" not in last_agent_message:
+        rating_match = re.search(r"(?:rating|rate|score|to)\s*\b([1-5])\b", last_message_lower)
+        if rating_match:
+            update_args["doctor_rating"] = int(rating_match.group(1))
+            is_update = True
     
     # Check phone update
-    phone_match = re.search(r"(\b\d{3}-\d{3}-\d{4}\b|\b\d{3}-\d{4}\b|\b\d{7,10}\b)", last_message)
-    if phone_match:
-        update_args["phone"] = phone_match.group(1).strip()
-        is_update = True
+    is_phone_update = False
+    if "what is your phone number?" not in last_agent_message:
+        phone_triggers = ["number is", "phone is", "phone number is", "change phone to", "change phone number to", "update phone to", "update phone number to", "change number to", "update number to"]
+        matched_phone_trigger = None
+        for trigger in phone_triggers:
+            if trigger in last_message_lower:
+                matched_phone_trigger = trigger
+                break
+        if matched_phone_trigger:
+            idx = last_message_lower.find(matched_phone_trigger)
+            val = last_message[idx + len(matched_phone_trigger):].strip()
+            val = re.sub(r'^[,.:;!?-]+|[,.:;!?-]+$', '', val).strip()
+            phone_match = re.search(r"(\b\d{3}[-.]\d{3}[-.]\d{4}\b|\b\d{3}[-.]\d{4}\b|\b\d{7,12}\b)", val)
+            if phone_match:
+                update_args["phone"] = phone_match.group(1).strip()
+                is_update = True
+                is_phone_update = True
+            elif val:
+                update_args["phone"] = val
+                is_update = True
+                is_phone_update = True
+        elif is_survey_completed:
+            phone_match = re.search(r"(\b\d{3}[-.]\d{3}[-.]\d{4}\b|\b\d{3}[-.]\d{4}\b|\b\d{7,12}\b)", last_message)
+            if phone_match:
+                update_args["phone"] = phone_match.group(1).strip()
+                is_update = True
+                is_phone_update = True
 
     # Check doctor name update first
     is_doctor_name_update = False
-    doc_triggers = ["change doctor name to", "change doctor to"]
-    matched_doc_trigger = None
-    for trigger in doc_triggers:
-        if trigger in last_message_lower:
-            matched_doc_trigger = trigger
-            break
-            
-    if matched_doc_trigger:
-        idx = last_message_lower.find(matched_doc_trigger)
-        val = last_message[idx + len(matched_doc_trigger):].strip()
-        val = re.sub(r'^[,.:;!?-]+|[,.:;!?-]+$', '', val).strip()
-        if val:
-            update_args["hcp_name"] = val
-            is_update = True
-            is_doctor_name_update = True
+    if "name of the doctor you visited?" not in last_agent_message:
+        doc_triggers = ["doctor name is", "change doctor name to", "change doctor to", "update doctor name to", "update doctor to"]
+        matched_doc_trigger = None
+        for trigger in doc_triggers:
+            if trigger in last_message_lower:
+                matched_doc_trigger = trigger
+                break
+                
+        if matched_doc_trigger:
+            idx = last_message_lower.find(matched_doc_trigger)
+            val = last_message[idx + len(matched_doc_trigger):].strip()
+            val = re.sub(r'^[,.:;!?-]+|[,.:;!?-]+$', '', val).strip()
+            if val:
+                update_args["hcp_name"] = val
+                is_update = True
+                is_doctor_name_update = True
 
     # Check patient name update
     is_patient_name_update = False
-    if not is_doctor_name_update:
-        patient_triggers = ["my name is", "i am", "patient is", "patient name is", "attendees is", "change name to", "change patient name to", "change patient to"]
+    if not is_doctor_name_update and "what is your name?" not in last_agent_message:
+        patient_triggers = ["my name is", "i am", "patient is", "patient name is", "attendees is", "change name to", "change patient name to", "change patient to", "update name to", "update patient name to", "update patient to"]
         matched_trigger = None
         for trigger in patient_triggers:
             if trigger in last_message_lower:
@@ -608,7 +701,7 @@ def run_mock_agent(state: AgentState) -> AgentState:
                 update_args["attendees"] = val
                 is_update = True
                 is_patient_name_update = True
-        elif "name" in last_message_lower or "patient" in last_message_lower or "attendees" in last_message_lower:
+        elif is_survey_completed and not is_skip(last_message) and last_message_lower not in {"yes", "ok", "okay", "correct", "confirm"} and "change" not in last_message_lower and "update" not in last_message_lower:
             # Case-insensitive name match
             name_match = re.search(r"(?i)\b(dr\.\s+[a-z]+|dr\s+[a-z]+|[a-z]+(?:\s+[a-z]+)?)\b", last_message)
             if name_match:
@@ -617,26 +710,71 @@ def run_mock_agent(state: AgentState) -> AgentState:
                 is_patient_name_update = True
 
     # Check channel update
-    if "channel" in last_message_lower or "type" in last_message_lower or any(ch in last_message_lower for ch in ["meeting", "call", "virtual", "email"]):
-        channel = "Meeting"
-        if "virtual" in last_message_lower or "zoom" in last_message_lower:
-            channel = "Virtual"
-        elif "phone" in last_message_lower or "call" in last_message_lower:
-            channel = "Call"
-        elif "email" in last_message_lower:
-            channel = "Email"
-        update_args["channel"] = channel
-        is_update = True
+    if "meeting, phone call, virtual meeting, or email" not in last_agent_message:
+        if is_survey_completed or any(tr in last_message_lower for tr in ["change channel", "update channel", "change type", "update type"]):
+            if "channel" in last_message_lower or "type" in last_message_lower or any(ch in last_message_lower for ch in ["meeting", "call", "virtual", "email"]):
+                channel = "Meeting"
+                if "virtual" in last_message_lower or "zoom" in last_message_lower:
+                    channel = "Virtual"
+                elif "phone" in last_message_lower or "call" in last_message_lower:
+                    channel = "Call"
+                elif "email" in last_message_lower:
+                    channel = "Email"
+                update_args["channel"] = channel
+                is_update = True
 
     # Check feedback update
-    if "feedback" in last_message_lower or "suggestion" in last_message_lower:
-        update_args["feedback"] = last_message
-        is_update = True
+    if "additional feedback or suggestions" not in last_agent_message:
+        if is_survey_completed or any(tr in last_message_lower for tr in ["change feedback", "update feedback", "change suggestion", "update suggestion"]):
+            if "feedback" in last_message_lower or "suggestion" in last_message_lower:
+                update_args["feedback"] = last_message
+                is_update = True
 
     # Check topic update
-    if "topic" in last_message_lower or "reason" in last_message_lower:
-        update_args["topics"] = last_message
-        is_update = True
+    if "reason for your visit or the topic discussed" not in last_agent_message:
+        if is_survey_completed or any(tr in last_message_lower for tr in ["change topic", "update topic", "change reason", "update reason"]):
+            if "topic" in last_message_lower or "reason" in last_message_lower:
+                update_args["topics"] = last_message
+                is_update = True
+
+    # Check materials update
+    if "were there any materials attached or shared?" not in last_agent_message:
+        material_triggers = ["material is", "materials are", "change materials to", "update materials to", "change material to", "update material to"]
+        matched_mat_trigger = None
+        for trigger in material_triggers:
+            if trigger in last_message_lower:
+                matched_mat_trigger = trigger
+                break
+        if matched_mat_trigger:
+            idx = last_message_lower.find(matched_mat_trigger)
+            val = last_message[idx + len(matched_mat_trigger):].strip()
+            val = re.sub(r'^[,.:;!?-]+|[,.:;!?-]+$', '', val).strip()
+            if val:
+                update_args["materials_shared"] = val
+                is_update = True
+        elif is_survey_completed or any(tr in last_message_lower for tr in ["change materials", "update materials", "change material", "update material"]):
+            if "material" in last_message_lower:
+                update_args["materials_shared"] = last_message
+                is_update = True
+
+    # Check if they asked to change/update a field but didn't provide a value
+    if not is_update and not is_clarifying_reply and ("change" in last_message_lower or "update" in last_message_lower):
+        if "doctor" in last_message_lower or "hcp" in last_message_lower or "dr" in last_message_lower:
+            response_text = "Sure! What would you like to update the doctor name to?"
+        elif "patient" in last_message_lower or "my name" in last_message_lower or "attendee" in last_message_lower or "name" in last_message_lower:
+            response_text = "Sure! What would you like to update the patient name to?"
+        elif "phone" in last_message_lower or "number" in last_message_lower:
+            response_text = "Sure! What would you like to update the phone number to?"
+        elif "material" in last_message_lower or "attachment" in last_message_lower:
+            response_text = "Sure! What would you like to update the materials shared to?"
+        elif "rating" in last_message_lower or "satisfaction" in last_message_lower or "score" in last_message_lower:
+            response_text = "Sure! What would you like to update the doctor rating to (1-5)?"
+        elif "feedback" in last_message_lower or "suggestion" in last_message_lower:
+            response_text = "Sure! What would you like to update the feedback to?"
+        elif "topic" in last_message_lower or "product" in last_message_lower or "reason" in last_message_lower:
+            response_text = "Sure! What would you like to update the topics discussed to?"
+        elif "channel" in last_message_lower or "type" in last_message_lower:
+            response_text = "Sure! What would you like to update the interaction type to (Meeting, Call, Virtual, Email)?"
 
     if is_update:
         db = SessionLocal()
@@ -654,44 +792,51 @@ def run_mock_agent(state: AgentState) -> AgentState:
         response_text = f"I have updated that field on the form! What would you like to do next?"
         suggested_actions.append({"type": "edit_interaction", "data": edit_data})
 
+    elif response_text:
+        # Clarifying question response_text is already set, so do nothing here and let it be returned!
+        pass
+
     # Step-by-step Survey Flow
     else:
         # Step 6: Channel / Date / Time
         if "meeting, phone call, virtual meeting, or email" in last_agent_message:
-            channel = "Meeting"
-            if "virtual" in last_message_lower or "zoom" in last_message_lower or "teams" in last_message_lower:
-                channel = "Virtual"
-            elif "phone" in last_message_lower or "call" in last_message_lower:
-                channel = "Call"
-            elif "email" in last_message_lower:
-                channel = "Email"
-            
-            # Combine into date_str and time_str fallback
-            date_str = date.today().strftime("%Y-%m-%d")
-            time_str = datetime.now().strftime("%I:%M %p")
-            
-            db = SessionLocal()
-            latest = db.query(Interaction).order_by(Interaction.date.desc()).first()
-            id_val = latest.id if latest else 1
-            db.close()
+            if is_skip(last_message):
+                response_text = "Got it! Would you like to schedule a next follow-up task? If so, please tell me the description and the next follow-up date (YYYY-MM-DD)."
+            else:
+                channel = "Meeting"
+                if "virtual" in last_message_lower or "zoom" in last_message_lower or "teams" in last_message_lower:
+                    channel = "Virtual"
+                elif "phone" in last_message_lower or "call" in last_message_lower:
+                    channel = "Call"
+                elif "email" in last_message_lower:
+                    channel = "Email"
+                
+                # Combine into date_str and time_str fallback
+                date_str = date.today().strftime("%Y-%m-%d")
+                time_str = datetime.now().strftime("%I:%M %p")
+                
+                db = SessionLocal()
+                latest = db.query(Interaction).order_by(Interaction.date.desc()).first()
+                id_val = latest.id if latest else 1
+                db.close()
 
-            edit_res = edit_interaction.invoke({
-                "interaction_id": id_val,
-                "channel": channel,
-                "date_str": date_str,
-                "time_str": time_str,
-                "notes": last_message
-            })
-            try:
-                edit_data = json.loads(edit_res)
-            except (json.JSONDecodeError, Exception):
-                edit_data = {"raw": edit_res}
-            response_text = "Got it! Would you like to schedule a next follow-up task? If so, please tell me the description and the next follow-up date (YYYY-MM-DD)."
-            suggested_actions.append({"type": "edit_interaction", "data": edit_data})
+                edit_res = edit_interaction.invoke({
+                    "interaction_id": id_val,
+                    "channel": channel,
+                    "date_str": date_str,
+                    "time_str": time_str,
+                    "notes": last_message
+                })
+                try:
+                    edit_data = json.loads(edit_res)
+                except (json.JSONDecodeError, Exception):
+                    edit_data = {"raw": edit_res}
+                response_text = "Got it! Would you like to schedule a next follow-up task? If so, please tell me the description and the next follow-up date (YYYY-MM-DD)."
+                suggested_actions.append({"type": "edit_interaction", "data": edit_data})
             
         # Step 7: Follow-up scheduling
         elif "schedule a next follow-up task?" in last_agent_message:
-            if any(no in last_message_lower for no in ["no", "none", "don't need", "no follow-up", "n/a"]):
+            if is_skip(last_message) or any(no in last_message_lower for no in ["no", "none", "don't need", "no follow-up", "n/a"]):
                 db = SessionLocal()
                 latest = db.query(Interaction).order_by(Interaction.date.desc()).first()
                 id_val = latest.id if latest else 1
@@ -752,116 +897,222 @@ def run_mock_agent(state: AgentState) -> AgentState:
 
         # Step 8: Finalization close out when user says "No"
         elif "all your feedback has been logged in the form" in last_agent_message:
-            if any(no in last_message_lower for no in ["no", "no thanks", "nothing else", "stop", "end"]):
+            if is_skip(last_message) or any(no in last_message_lower for no in ["no", "no thanks", "nothing else", "stop", "end"]):
                 response_text = "Great! I have finalized and closed your feedback form. Have a wonderful day!"
             else:
                 response_text = "Understood. Please let me know if you would like to make any other changes, or say 'No' to close the form."
 
-        # Step 5: Patient name and phone number
-        elif "provide your name and phone number" in last_agent_message:
-            phone = None
-            phone_match = re.search(r"(\b\d{3}-\d{3}-\d{4}\b|\b\d{3}-\d{4}\b|\b\d{7,10}\b)", last_message)
-            if phone_match:
-                phone = phone_match.group(1).strip()
-            
-            attendees = last_message.strip()
-            name_match = re.search(r"(?i:my name is|i am|patient is|patient name is)\s+([a-zA-Z]+(?:\s+[a-zA-Z]+)?)", last_message)
-            if name_match:
-                attendees = name_match.group(1).strip()
-            elif phone:
-                attendees = last_message.replace(phone, "").replace("phone", "").replace("number", "").replace("and my", "").replace("is", "").replace("my", "").strip()
-                attendees = re.sub(r'\s+', ' ', attendees)
-                attendees = re.sub(r'[,.:;!?-]', '', attendees).strip()
+        # Step 8.5: After updates, handle finalization close out
+        elif "updated that field on the form" in last_agent_message:
+            if is_skip(last_message) or any(no in last_message_lower for no in ["no", "no thanks", "nothing else", "stop", "end"]):
+                response_text = "Great! I have finalized and closed your feedback form. Have a wonderful day!"
+            else:
+                response_text = "Understood. Please let me know if you would like to make any other changes, or say 'No' to close the form."
 
-            db = SessionLocal()
-            latest = db.query(Interaction).order_by(Interaction.date.desc()).first()
-            id_val = latest.id if latest else 1
-            db.close()
+        # Step 5b: Phone number (asked separately after patient name)
+        elif "what is your phone number?" in last_agent_message:
+            if is_skip(last_message):
+                response_text = "Got it! Lastly, was this consultation a Meeting, Phone Call, Virtual Meeting, or Email? Also, what date and time did it occur?"
+            else:
+                phone = None
+                phone_match = re.search(r"(\b\d{3}[-.]\d{3}[-.]\d{4}\b|\b\d{3}[-.]\d{4}\b|\b\d{7,12}\b)", last_message)
+                if phone_match:
+                    phone = phone_match.group(1).strip()
+                else:
+                    # Accept whatever the user typed as their phone
+                    phone = last_message.strip()
 
-            edit_res = edit_interaction.invoke({
-                "interaction_id": id_val,
-                "phone": phone,
-                "attendees": attendees,
-                "notes": last_message
-            })
-            edit_data = json.loads(edit_res)
-            response_text = f"Got it! Lastly, was this consultation a Meeting, Phone Call, Virtual Meeting, or Email? Also, what date and time did it occur?"
-            suggested_actions.append({"type": "edit_interaction", "data": edit_data})
+                db = SessionLocal()
+                latest = db.query(Interaction).order_by(Interaction.date.desc()).first()
+                id_val = latest.id if latest else 1
+                db.close()
+
+                edit_res = edit_interaction.invoke({
+                    "interaction_id": id_val,
+                    "phone": phone,
+                    "notes": last_message
+                })
+                edit_data = json.loads(edit_res)
+                response_text = "Got it! Lastly, was this consultation a Meeting, Phone Call, Virtual Meeting, or Email? Also, what date and time did it occur?"
+                suggested_actions.append({"type": "edit_interaction", "data": edit_data})
+
+        # Step 5a: Patient name (asked first, separately)
+        elif "what is your name?" in last_agent_message:
+            if is_skip(last_message):
+                response_text = "Thank you! What is your phone number?"
+            else:
+                attendees = last_message.strip()
+                name_match = re.search(r"(?i:my name is|i am|patient is|patient name is|name is)\s+([a-zA-Z]+(?:\s+[a-zA-Z]+)?)", last_message)
+                if name_match:
+                    attendees = name_match.group(1).strip()
+
+                db = SessionLocal()
+                latest = db.query(Interaction).order_by(Interaction.date.desc()).first()
+                id_val = latest.id if latest else 1
+                db.close()
+
+                edit_res = edit_interaction.invoke({
+                    "interaction_id": id_val,
+                    "attendees": attendees,
+                    "notes": last_message
+                })
+                edit_data = json.loads(edit_res)
+                response_text = "Thank you! What is your phone number?"
+                suggested_actions.append({"type": "edit_interaction", "data": edit_data})
 
         # Step 4: Feedback
         elif "additional feedback or suggestions" in last_agent_message:
-            feedback = last_message.strip()
-            
-            db = SessionLocal()
-            latest = db.query(Interaction).order_by(Interaction.date.desc()).first()
-            id_val = latest.id if latest else 1
-            db.close()
+            if is_skip(last_message):
+                # User has nothing to add — skip saving and move on
+                response_text = "No problem! Were there any materials attached or shared?"
+            else:
+                feedback = last_message.strip()
+                
+                db = SessionLocal()
+                latest = db.query(Interaction).order_by(Interaction.date.desc()).first()
+                id_val = latest.id if latest else 1
+                db.close()
 
-            edit_res = edit_interaction.invoke({
-                "interaction_id": id_val,
-                "feedback": feedback,
-                "notes": last_message
-            })
-            edit_data = json.loads(edit_res)
-            response_text = f"Thank you for the feedback. Could you please provide your name and phone number for our records?"
-            suggested_actions.append({"type": "edit_interaction", "data": edit_data})
+                edit_res = edit_interaction.invoke({
+                    "interaction_id": id_val,
+                    "feedback": feedback,
+                    "notes": last_message
+                })
+                edit_data = json.loads(edit_res)
+                response_text = "Thank you for the feedback. Were there any materials attached or shared?"
+                suggested_actions.append({"type": "edit_interaction", "data": edit_data})
+
+        # Step 4.5: Materials attached
+        elif "were there any materials attached or shared?" in last_agent_message:
+            if is_skip(last_message) or any(no in last_message_lower for no in ["no", "none", "nope", "n/a"]):
+                response_text = "Got it! What is your name?"
+            else:
+                yes_phrases = {"yes", "yep", "yeah", "sure", "y", "correct", "true", "indeed", "there were", "yes there were"}
+                cleaned_msg = last_message_lower.strip().rstrip('.')
+                if cleaned_msg in yes_phrases:
+                    response_text = "What specific materials were attached or shared?"
+                else:
+                    materials = last_message.strip()
+                    db = SessionLocal()
+                    latest = db.query(Interaction).order_by(Interaction.date.desc()).first()
+                    id_val = latest.id if latest else 1
+                    db.close()
+
+                    edit_res = edit_interaction.invoke({
+                        "interaction_id": id_val,
+                        "materials_shared": materials,
+                        "notes": last_message
+                    })
+                    try:
+                        edit_data = json.loads(edit_res)
+                    except Exception:
+                        edit_data = {"raw": edit_res}
+                    response_text = "Got it! What is your name?"
+                    suggested_actions.append({"type": "edit_interaction", "data": edit_data})
+
+        # Step 4.6: Specific materials attached
+        elif "what specific materials were attached or shared?" in last_agent_message:
+            if is_skip(last_message) or any(no in last_message_lower for no in ["no", "none", "nope", "n/a"]):
+                response_text = "Got it! What is your name?"
+            else:
+                materials = last_message.strip()
+                db = SessionLocal()
+                latest = db.query(Interaction).order_by(Interaction.date.desc()).first()
+                id_val = latest.id if latest else 1
+                db.close()
+
+                edit_res = edit_interaction.invoke({
+                    "interaction_id": id_val,
+                    "materials_shared": materials,
+                    "notes": last_message
+                })
+                try:
+                    edit_data = json.loads(edit_res)
+                except Exception:
+                    edit_data = {"raw": edit_res}
+                response_text = "Got it! What is your name?"
+                suggested_actions.append({"type": "edit_interaction", "data": edit_data})
 
         # Step 3: Rating
         elif "rate your satisfaction with the doctor" in last_agent_message:
-            rating_match = re.search(r"\b([1-5])\b", last_message)
-            doctor_rating = int(rating_match.group(1)) if rating_match else 3
-            
-            db = SessionLocal()
-            latest = db.query(Interaction).order_by(Interaction.date.desc()).first()
-            id_val = latest.id if latest else 1
-            db.close()
+            if is_skip(last_message):
+                # Skip — don't save a rating, advance to feedback question
+                response_text = "No problem! Do you have any additional feedback or suggestions about the doctor?"
+            else:
+                rating_match = re.search(r"\b([1-5])\b", last_message)
+                doctor_rating = int(rating_match.group(1)) if rating_match else 3
+                
+                db = SessionLocal()
+                latest = db.query(Interaction).order_by(Interaction.date.desc()).first()
+                id_val = latest.id if latest else 1
+                db.close()
 
-            edit_res = edit_interaction.invoke({
-                "interaction_id": id_val,
-                "doctor_rating": doctor_rating,
-                "notes": last_message
-            })
-            edit_data = json.loads(edit_res)
-            response_text = f"Thanks for the rating! Do you have any additional feedback or suggestions about the doctor?"
-            suggested_actions.append({"type": "edit_interaction", "data": edit_data})
+                edit_res = edit_interaction.invoke({
+                    "interaction_id": id_val,
+                    "doctor_rating": doctor_rating,
+                    "notes": last_message
+                })
+                edit_data = json.loads(edit_res)
+                response_text = "Thanks for the rating! Do you have any additional feedback or suggestions about the doctor?"
+                suggested_actions.append({"type": "edit_interaction", "data": edit_data})
 
         # Step 2: Topics discussed / reason for visit
         elif "reason for your visit or the topic discussed" in last_agent_message:
-            topics = last_message.strip()
-            
-            db = SessionLocal()
-            latest = db.query(Interaction).order_by(Interaction.date.desc()).first()
-            id_val = latest.id if latest else 1
-            db.close()
+            if is_skip(last_message):
+                # Skip saving — just advance
+                response_text = "Understood. On a scale of 1 to 5, how would you rate your satisfaction with the doctor?"
+            else:
+                topics = last_message.strip()
+                
+                db = SessionLocal()
+                latest = db.query(Interaction).order_by(Interaction.date.desc()).first()
+                id_val = latest.id if latest else 1
+                db.close()
 
-            edit_res = edit_interaction.invoke({
-                "interaction_id": id_val,
-                "topics": topics,
-                "notes": last_message
-            })
-            edit_data = json.loads(edit_res)
-            response_text = f"Understood. On a scale of 1 to 5, how would you rate your satisfaction with the doctor?"
-            suggested_actions.append({"type": "edit_interaction", "data": edit_data})
+                edit_res = edit_interaction.invoke({
+                    "interaction_id": id_val,
+                    "topics": topics,
+                    "notes": last_message
+                })
+                edit_data = json.loads(edit_res)
+                response_text = "Understood. On a scale of 1 to 5, how would you rate your satisfaction with the doctor?"
+                suggested_actions.append({"type": "edit_interaction", "data": edit_data})
 
         # Step 1: Doctor name (HCP Name)
         elif "name of the doctor you visited?" in last_agent_message:
-            hcp_name = None
-            doc_match = re.search(r"\b(Dr\.\s+[A-Z][a-zA-Z]+(?:\s+[A-Z][a-zA-Z]+)?|Dr\s+[A-Z][a-zA-Z]+(?:\s+[A-Z][a-zA-Z]+)?|[A-Z][a-zA-Z]+\s+[A-Z][a-zA-Z]+)\b", last_message)
-            if doc_match:
-                hcp_name = doc_match.group(1).strip()
-            else:
-                hcp_name = last_message.strip()
+            if is_skip(last_message):
+                db = SessionLocal()
+                hcp = db.query(HCP).filter(HCP.id == hcp_id).first()
+                hcp_name = hcp.name if hcp else "the doctor"
+                db.close()
 
-            log_res = log_interaction.invoke({
-                "hcp_id": hcp_id,
-                "hcp_name": hcp_name,
-                "notes": last_message,
-                "date_str": date.today().strftime("%Y-%m-%d"),
-                "time_str": datetime.now().strftime("%I:%M %p")
-            })
-            log_data = json.loads(log_res)
-            response_text = f"I've started logging the form for {hcp_name}. What was the reason for your visit or the topic discussed during the consultation?"
-            suggested_actions.append({"type": "log_interaction", "data": log_data})
+                log_res = log_interaction.invoke({
+                    "hcp_id": hcp_id,
+                    "notes": last_message,
+                    "date_str": date.today().strftime("%Y-%m-%d"),
+                    "time_str": datetime.now().strftime("%I:%M %p")
+                })
+                log_data = json.loads(log_res)
+                response_text = f"I've started logging the form for {hcp_name}. What was the reason for your visit or the topic discussed during the consultation?"
+                suggested_actions.append({"type": "log_interaction", "data": log_data})
+            else:
+                hcp_name = None
+                doc_match = re.search(r"\b(Dr\.\s+[A-Z][a-zA-Z]+(?:\s+[A-Z][a-zA-Z]+)?|Dr\s+[A-Z][a-zA-Z]+(?:\s+[A-Z][a-zA-Z]+)?|[A-Z][a-zA-Z]+\s+[A-Z][a-zA-Z]+)\b", last_message)
+                if doc_match:
+                    hcp_name = doc_match.group(1).strip()
+                else:
+                    hcp_name = last_message.strip()
+
+                log_res = log_interaction.invoke({
+                    "hcp_id": hcp_id,
+                    "hcp_name": hcp_name,
+                    "notes": last_message,
+                    "date_str": date.today().strftime("%Y-%m-%d"),
+                    "time_str": datetime.now().strftime("%I:%M %p")
+                })
+                log_data = json.loads(log_res)
+                response_text = f"I've started logging the form for {hcp_name}. What was the reason for your visit or the topic discussed during the consultation?"
+                suggested_actions.append({"type": "log_interaction", "data": log_data})
 
         # Welcome / First message
         else:
@@ -904,14 +1155,21 @@ def call_llm(state: AgentState) -> Dict[str, Any]:
             "2. Ask for the topic or reason for the consultation (log the interaction once you have the doctor name).\n"
             "3. Ask for their satisfaction rating of the doctor (from 1 to 5).\n"
             "4. Ask for any suggestions or additional feedback.\n"
-            "5. Ask for their name and phone number.\n"
-            "6. Ask for the interaction channel (Meeting, Call, Virtual, Email) and the date/time of the visit.\n"
-            "7. Ask if they want to schedule a next follow-up task (getting description and due date in YYYY-MM-DD format). If so, call `schedule_followup` and also write it to `followup_actions` on the form.\n"
-            "8. Confirm that the entire form is logged, saying: 'Thank you! All your feedback has been logged in the form on the left. Let me know if you would like to update or change any of the fields!'\n"
-            "9. Once you display this confirmation, if the user replies 'No', end the conversation and close the form.\n\n"
+            "5. Ask if there were any materials attached or shared.\n"
+            "6. If materials were attached or shared (i.e. user responds yes or indicates so), ask 'What specific materials were attached or shared?' and update the materials_shared field with their response. If they say no or skip, proceed directly to asking for their name.\n"
+            "7. Ask ONLY for their name (patient name). Do NOT ask for phone number here.\n"
+            "8. Ask ONLY for their phone number. Do NOT ask for name or anything else here.\n"
+            "9. Ask for the interaction channel (Meeting, Call, Virtual, Email) and the date/time of the visit.\n"
+            "10. Ask if they want to schedule a next follow-up task (getting description and due date in YYYY-MM-DD format). If so, call `schedule_followup` and also write it to `followup_actions` on the form.\n"
+            "11. Confirm that the entire form is logged, saying: 'Thank you! All your feedback has been logged in the form on the left. Let me know if you would like to update or change any of the fields!'\n"
+            "12. Once you display this confirmation, if the user replies 'No', end the conversation and close the form.\n\n"
             "RULES:\n"
-            "- Ask only ONE question at a time. Do not ask for multiple fields at once.\n"
+            "- Ask only ONE question at a time. Never combine two questions in one message.\n"
+            "- Ask for name and phone number in TWO SEPARATE messages — name first, then phone.\n"
             "- When the user provides a detail, call the appropriate database tool (`log_interaction` or `edit_interaction`) to update the form fields in real-time.\n"
+            "- IMPORTANT: If the user replies with 'nothing', 'none', 'n/a', 'skip', 'nope', or any similar empty/skip phrase to ANY question in the questionnaire flow (including doctor name, topics, rating, feedback, materials, patient name, phone, channel, follow-up), do NOT save/update that field in the database. Simply acknowledge and move on to the next question in the sequence.\n"
+            "- IMPORTANT: Only update patient name (attendees), doctor name (hcp_name), phone number (phone), or materials (materials_shared) in `edit_interaction` if the user explicitly asks to update/change them (using triggers like 'my name is Y', 'doctor name is X', 'number is Z', 'materials are W', 'change name to ...') or is currently answering that specific question in the flow.\n"
+            "- If the user asks to 'update' or 'change' a field (such as 'doctor name', 'patient name', or 'phone number') after the survey is completed but does not provide the new value in the same message, ask a clarifying question (e.g. 'What would you like to update the doctor name to?'). Once they respond with the new value, call `edit_interaction` to save it.\n"
             "- After completing the questionnaire, construct a short summary of the whole chat and save it in the `notes` (Discussion Notes) field of the interaction.\n"
             "- If the user asks to change or update any details at any point (e.g. 'actually change my rating to 4'), call `edit_interaction` to apply the update immediately."
         )
