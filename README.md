@@ -415,6 +415,6 @@ Aivoa-AI-CRM/
 
 <div align="center">
 
-Built with ❤️ for Life Sciences field teams · Powered by LangGraph & Groq
+Built with ❤️ by Vaibhav for Life Sciences field teams · Powered by LangGraph & Groq
 
 </div>
