@@ -130,6 +130,48 @@ Both interfaces sync to the same SQLite backend, keeping HCP profiles, interacti
 
 The **LangGraph agent** is a stateful state-machine that orchestrates tool calls when a rep submits unstructured field notes. When a `GROQ_API_KEY` is configured, it uses Groq's `gemma2-9b-it` model. Without a key, it falls back to a smart pattern-matching regex engine.
 
+### 🔄 Conversational Survey Flowchart
+
+The conversational AI assistant collects patient feedback and updates the CRM form step-by-step using the following workflow:
+
+```mermaid
+graph TD
+    Start([Start Conversation]) --> Q1[1. Ask Doctor Name]
+    Q1 --> Q2[2. Ask Topic / Reason]
+    Q2 --> LogInt[Trigger log_interaction tool]
+    LogInt --> Q3[3. Ask Satisfaction Rating 1-5]
+    Q3 --> Q4[4. Ask Additional Feedback / Suggestions]
+    Q4 --> Q5[5. Ask if materials were attached or shared?]
+    
+    Q5 -- Yes --> Q5_5[5.5 Ask what specific materials were shared]
+    Q5_5 --> UpdateMat[Update materials_shared field]
+    UpdateMat --> Q6[6. Ask Patient Name]
+    
+    Q5 -- No / Skip --> Q6
+    
+    Q6 --> Q7[7. Ask Patient Phone Number]
+    Q7 --> Q8[8. Ask Interaction Channel / Date / Time]
+    Q8 --> Q9[9. Ask to schedule follow-up task?]
+    
+    Q9 -- Yes --> TaskTool[Trigger schedule_followup tool]
+    TaskTool --> Confirm[10. Confirm Logging Complete]
+    
+    Q9 -- No / Skip --> Confirm
+    
+    Confirm --> PostSurvey{User response?}
+    
+    PostSurvey -- "No / Close" --> Final([Finalize & Close Form])
+    
+    PostSurvey -- "Update / Change Field" --> HasValue{Specific value provided?}
+    
+    HasValue -- Yes --> DirectUpdate[Trigger edit_interaction tool]
+    DirectUpdate --> Confirm
+    
+    HasValue -- No --> Clarify[Ask clarifying question e.g., 'What is the new doctor name?']
+    Clarify --> UserReply[User provides new value]
+    UserReply --> DirectUpdate
+```
+
 The agent has access to **5 custom tools**:
 
 ### 1. `get_hcp_profile`
