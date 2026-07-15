@@ -466,36 +466,127 @@ def generate_followup_email(hcp_id: int, interaction_summary: str) -> str:
     finally:
         db.close()
 
-def generate_discussion_summary(interaction):
+def generate_summary_from_data(data: dict) -> str:
     hcp_name = "the doctor"
     phone = None
     db = SessionLocal()
-    hcp = db.query(HCP).filter(HCP.id == interaction.hcp_id).first()
+    hcp = db.query(HCP).filter(HCP.id == data["hcp_id"]).first()
     if hcp:
         hcp_name = hcp.name
-        phone = hcp.phone
+        phone = data.get("phone") or hcp.phone
     db.close()
     
     parts = []
-    if interaction.attendees:
+    attendees = data.get("attendees")
+    if attendees:
         contact = f" ({phone})" if phone else ""
-        parts.append(f"Patient {interaction.attendees}{contact} visited {hcp_name}")
+        parts.append(f"Patient {attendees}{contact} visited {hcp_name}")
     else:
         parts.append(f"Feedback session for {hcp_name}")
         
-    if interaction.products_discussed and interaction.products_discussed != "None":
-        parts.append(f"regarding '{interaction.products_discussed}'")
+    products_discussed = data.get("products_discussed")
+    if products_discussed and products_discussed != "None":
+        parts.append(f"regarding '{products_discussed}'")
         
-    if interaction.channel:
-        parts.append(f"via {interaction.channel}")
+    channel = data.get("channel")
+    if channel:
+        parts.append(f"via {channel}")
         
-    if interaction.doctor_rating:
-        parts.append(f"Satisfaction rating: {interaction.doctor_rating}/5.")
+    doctor_rating = data.get("doctor_rating")
+    if doctor_rating:
+        parts.append(f"Satisfaction rating: {doctor_rating}/5.")
         
-    if interaction.feedback:
-        parts.append(f"Feedback: '{interaction.feedback}'")
+    feedback = data.get("feedback")
+    if feedback:
+        parts.append(f"Feedback: '{feedback}'")
+        
+    materials_shared = data.get("materials_shared")
+    if materials_shared:
+        parts.append(f"Materials shared: {materials_shared}.")
+        
+    next_steps = data.get("next_steps")
+    if next_steps and next_steps != "None":
+        parts.append(f"Follow-up: {next_steps}.")
         
     return " ".join(parts)
+
+def generate_discussion_summary(interaction):
+    data = {
+        "hcp_id": interaction.hcp_id,
+        "attendees": interaction.attendees,
+        "products_discussed": interaction.products_discussed,
+        "channel": interaction.channel,
+        "doctor_rating": interaction.doctor_rating,
+        "feedback": interaction.feedback,
+        "materials_shared": getattr(interaction, "materials_shared", None),
+        "next_steps": getattr(interaction, "next_steps", None)
+    }
+    return generate_summary_from_data(data)
+
+def summarize_chat_history_with_llm(messages: List[BaseMessage]) -> str:
+    chat_lines = []
+    for m in messages:
+        role = ""
+        content = ""
+        if isinstance(m, HumanMessage) or (hasattr(m, "type") and m.type == "human"):
+            role = "User"
+            content = m.content
+        elif isinstance(m, AIMessage) or (hasattr(m, "type") and m.type == "ai"):
+            role = "Assistant"
+            content = m.content
+        elif isinstance(m, dict):
+            role = "User" if m.get("role") == "user" else "Assistant"
+            content = m.get("content", "")
+            
+        if content and role:
+            if content.strip().startswith("{") and content.strip().endswith("}"):
+                continue
+            chat_lines.append(f"{role}: {content}")
+            
+    chat_text = "\n".join(chat_lines)
+    if not chat_text:
+        return ""
+        
+    try:
+        model = ChatGroq(
+            model_name="llama-3.3-70b-versatile",
+            api_key=GROQ_API_KEY,
+            temperature=0.1
+        )
+        prompt = (
+            "You are a helpful CRM assistant. Summarize the following consultation feedback chat conversation into a single paragraph of simplified discussion notes.\n"
+            "Include key details like: doctor visited, topics/products discussed, doctor satisfaction rating, feedback, patient name, contact info, materials shared, and scheduled follow-ups.\n"
+            "Keep it concise, professional, and in third-person. Do not include conversational preambles or greetings. Output ONLY the summary paragraph.\n\n"
+            f"Chat history:\n{chat_text}"
+        )
+        resp = model.invoke([HumanMessage(content=prompt)])
+        return resp.content.strip()
+    except Exception as e:
+        print(f"Error summarizing chat history: {e}")
+        return ""
+
+def get_simplified_chat_summary(messages: List[BaseMessage], tool_args: Dict[str, Any]) -> str:
+    if GROQ_API_KEY:
+        summary = summarize_chat_history_with_llm(messages)
+        if summary:
+            return summary
+
+    db = SessionLocal()
+    latest = db.query(Interaction).order_by(Interaction.date.desc()).first()
+    
+    temp = {
+        "attendees": tool_args.get("attendees") or (latest.attendees if latest else ""),
+        "products_discussed": tool_args.get("topics") or tool_args.get("products") or (latest.products_discussed if latest else ""),
+        "channel": tool_args.get("channel") or (latest.channel if latest else ""),
+        "doctor_rating": tool_args.get("doctor_rating") or (latest.doctor_rating if latest else None),
+        "feedback": tool_args.get("feedback") or (latest.feedback if latest else ""),
+        "materials_shared": tool_args.get("materials_shared") or (latest.materials_shared if latest else ""),
+        "next_steps": tool_args.get("followup_actions") or (latest.next_steps if latest else ""),
+        "hcp_id": tool_args.get("hcp_id") or (latest.hcp_id if latest else 1)
+    }
+    db.close()
+    
+    return generate_summary_from_data(temp)
 
 # List of tools to pass to the agent
 tools_list = [get_hcp_profile, log_interaction, edit_interaction, schedule_followup, generate_followup_email]
@@ -780,10 +871,24 @@ def run_mock_agent(state: AgentState) -> AgentState:
         db = SessionLocal()
         latest = db.query(Interaction).order_by(Interaction.date.desc()).first()
         id_val = latest.id if latest else 1
+        if latest:
+            temp = {
+                "attendees": update_args.get("attendees", latest.attendees),
+                "products_discussed": update_args.get("topics", latest.products_discussed),
+                "channel": update_args.get("channel", latest.channel),
+                "doctor_rating": update_args.get("doctor_rating", latest.doctor_rating),
+                "feedback": update_args.get("feedback", latest.feedback),
+                "materials_shared": update_args.get("materials_shared", latest.materials_shared),
+                "next_steps": update_args.get("followup_actions", latest.next_steps),
+                "hcp_id": latest.hcp_id
+            }
+            notes_summary = generate_summary_from_data(temp)
+        else:
+            notes_summary = last_message
         db.close()
 
         update_args["interaction_id"] = id_val
-        update_args["notes"] = last_message
+        update_args["notes"] = notes_summary
         edit_res = edit_interaction.invoke(update_args)
         try:
             edit_data = json.loads(edit_res)
@@ -818,6 +923,20 @@ def run_mock_agent(state: AgentState) -> AgentState:
                 db = SessionLocal()
                 latest = db.query(Interaction).order_by(Interaction.date.desc()).first()
                 id_val = latest.id if latest else 1
+                if latest:
+                    temp = {
+                        "attendees": latest.attendees,
+                        "products_discussed": latest.products_discussed,
+                        "channel": channel,
+                        "doctor_rating": latest.doctor_rating,
+                        "feedback": latest.feedback,
+                        "materials_shared": latest.materials_shared,
+                        "next_steps": latest.next_steps,
+                        "hcp_id": latest.hcp_id
+                    }
+                    notes_summary = generate_summary_from_data(temp)
+                else:
+                    notes_summary = last_message
                 db.close()
 
                 edit_res = edit_interaction.invoke({
@@ -825,7 +944,7 @@ def run_mock_agent(state: AgentState) -> AgentState:
                     "channel": channel,
                     "date_str": date_str,
                     "time_str": time_str,
-                    "notes": last_message
+                    "notes": notes_summary
                 })
                 try:
                     edit_data = json.loads(edit_res)
@@ -840,9 +959,20 @@ def run_mock_agent(state: AgentState) -> AgentState:
                 db = SessionLocal()
                 latest = db.query(Interaction).order_by(Interaction.date.desc()).first()
                 id_val = latest.id if latest else 1
-                
-                # Retrieve the interaction to generate discussion summary notes
-                notes_summary = generate_discussion_summary(latest) if latest else last_message
+                if latest:
+                    temp = {
+                        "attendees": latest.attendees,
+                        "products_discussed": latest.products_discussed,
+                        "channel": latest.channel,
+                        "doctor_rating": latest.doctor_rating,
+                        "feedback": latest.feedback,
+                        "materials_shared": latest.materials_shared,
+                        "next_steps": "None",
+                        "hcp_id": latest.hcp_id
+                    }
+                    notes_summary = generate_summary_from_data(temp)
+                else:
+                    notes_summary = last_message
                 
                 edit_res = edit_interaction.invoke({
                     "interaction_id": id_val,
@@ -880,8 +1010,20 @@ def run_mock_agent(state: AgentState) -> AgentState:
                 
                 followup_text = f"Follow-up on {due_date_str}: {description}"
                 
-                # Retrieve the interaction to generate discussion summary notes
-                notes_summary = generate_discussion_summary(latest) if latest else last_message
+                if latest:
+                    temp = {
+                        "attendees": latest.attendees,
+                        "products_discussed": latest.products_discussed,
+                        "channel": latest.channel,
+                        "doctor_rating": latest.doctor_rating,
+                        "feedback": latest.feedback,
+                        "materials_shared": latest.materials_shared,
+                        "next_steps": followup_text,
+                        "hcp_id": latest.hcp_id
+                    }
+                    notes_summary = generate_summary_from_data(temp)
+                else:
+                    notes_summary = last_message
                 
                 edit_res = edit_interaction.invoke({
                     "interaction_id": id_val,
@@ -925,12 +1067,27 @@ def run_mock_agent(state: AgentState) -> AgentState:
                 db = SessionLocal()
                 latest = db.query(Interaction).order_by(Interaction.date.desc()).first()
                 id_val = latest.id if latest else 1
+                if latest:
+                    temp = {
+                        "attendees": latest.attendees,
+                        "products_discussed": latest.products_discussed,
+                        "channel": latest.channel,
+                        "doctor_rating": latest.doctor_rating,
+                        "feedback": latest.feedback,
+                        "materials_shared": latest.materials_shared,
+                        "next_steps": latest.next_steps,
+                        "hcp_id": latest.hcp_id,
+                        "phone": phone
+                    }
+                    notes_summary = generate_summary_from_data(temp)
+                else:
+                    notes_summary = last_message
                 db.close()
 
                 edit_res = edit_interaction.invoke({
                     "interaction_id": id_val,
                     "phone": phone,
-                    "notes": last_message
+                    "notes": notes_summary
                 })
                 edit_data = json.loads(edit_res)
                 response_text = "Got it! Lastly, was this consultation a Meeting, Phone Call, Virtual Meeting, or Email? Also, what date and time did it occur?"
@@ -949,12 +1106,26 @@ def run_mock_agent(state: AgentState) -> AgentState:
                 db = SessionLocal()
                 latest = db.query(Interaction).order_by(Interaction.date.desc()).first()
                 id_val = latest.id if latest else 1
+                if latest:
+                    temp = {
+                        "attendees": attendees,
+                        "products_discussed": latest.products_discussed,
+                        "channel": latest.channel,
+                        "doctor_rating": latest.doctor_rating,
+                        "feedback": latest.feedback,
+                        "materials_shared": latest.materials_shared,
+                        "next_steps": latest.next_steps,
+                        "hcp_id": latest.hcp_id
+                    }
+                    notes_summary = generate_summary_from_data(temp)
+                else:
+                    notes_summary = last_message
                 db.close()
 
                 edit_res = edit_interaction.invoke({
                     "interaction_id": id_val,
                     "attendees": attendees,
-                    "notes": last_message
+                    "notes": notes_summary
                 })
                 edit_data = json.loads(edit_res)
                 response_text = "Thank you! What is your phone number?"
@@ -971,12 +1142,26 @@ def run_mock_agent(state: AgentState) -> AgentState:
                 db = SessionLocal()
                 latest = db.query(Interaction).order_by(Interaction.date.desc()).first()
                 id_val = latest.id if latest else 1
+                if latest:
+                    temp = {
+                        "attendees": latest.attendees,
+                        "products_discussed": latest.products_discussed,
+                        "channel": latest.channel,
+                        "doctor_rating": latest.doctor_rating,
+                        "feedback": feedback,
+                        "materials_shared": latest.materials_shared,
+                        "next_steps": latest.next_steps,
+                        "hcp_id": latest.hcp_id
+                    }
+                    notes_summary = generate_summary_from_data(temp)
+                else:
+                    notes_summary = last_message
                 db.close()
 
                 edit_res = edit_interaction.invoke({
                     "interaction_id": id_val,
                     "feedback": feedback,
-                    "notes": last_message
+                    "notes": notes_summary
                 })
                 edit_data = json.loads(edit_res)
                 response_text = "Thank you for the feedback. Were there any materials attached or shared?"
@@ -996,12 +1181,26 @@ def run_mock_agent(state: AgentState) -> AgentState:
                     db = SessionLocal()
                     latest = db.query(Interaction).order_by(Interaction.date.desc()).first()
                     id_val = latest.id if latest else 1
+                    if latest:
+                        temp = {
+                            "attendees": latest.attendees,
+                            "products_discussed": latest.products_discussed,
+                            "channel": latest.channel,
+                            "doctor_rating": latest.doctor_rating,
+                            "feedback": latest.feedback,
+                            "materials_shared": materials,
+                            "next_steps": latest.next_steps,
+                            "hcp_id": latest.hcp_id
+                        }
+                        notes_summary = generate_summary_from_data(temp)
+                    else:
+                        notes_summary = last_message
                     db.close()
 
                     edit_res = edit_interaction.invoke({
                         "interaction_id": id_val,
                         "materials_shared": materials,
-                        "notes": last_message
+                        "notes": notes_summary
                     })
                     try:
                         edit_data = json.loads(edit_res)
@@ -1019,12 +1218,26 @@ def run_mock_agent(state: AgentState) -> AgentState:
                 db = SessionLocal()
                 latest = db.query(Interaction).order_by(Interaction.date.desc()).first()
                 id_val = latest.id if latest else 1
+                if latest:
+                    temp = {
+                        "attendees": latest.attendees,
+                        "products_discussed": latest.products_discussed,
+                        "channel": latest.channel,
+                        "doctor_rating": latest.doctor_rating,
+                        "feedback": latest.feedback,
+                        "materials_shared": materials,
+                        "next_steps": latest.next_steps,
+                        "hcp_id": latest.hcp_id
+                    }
+                    notes_summary = generate_summary_from_data(temp)
+                else:
+                    notes_summary = last_message
                 db.close()
 
                 edit_res = edit_interaction.invoke({
                     "interaction_id": id_val,
                     "materials_shared": materials,
-                    "notes": last_message
+                    "notes": notes_summary
                 })
                 try:
                     edit_data = json.loads(edit_res)
@@ -1045,12 +1258,26 @@ def run_mock_agent(state: AgentState) -> AgentState:
                 db = SessionLocal()
                 latest = db.query(Interaction).order_by(Interaction.date.desc()).first()
                 id_val = latest.id if latest else 1
+                if latest:
+                    temp = {
+                        "attendees": latest.attendees,
+                        "products_discussed": latest.products_discussed,
+                        "channel": latest.channel,
+                        "doctor_rating": doctor_rating,
+                        "feedback": latest.feedback,
+                        "materials_shared": latest.materials_shared,
+                        "next_steps": latest.next_steps,
+                        "hcp_id": latest.hcp_id
+                    }
+                    notes_summary = generate_summary_from_data(temp)
+                else:
+                    notes_summary = last_message
                 db.close()
 
                 edit_res = edit_interaction.invoke({
                     "interaction_id": id_val,
                     "doctor_rating": doctor_rating,
-                    "notes": last_message
+                    "notes": notes_summary
                 })
                 edit_data = json.loads(edit_res)
                 response_text = "Thanks for the rating! Do you have any additional feedback or suggestions about the doctor?"
@@ -1067,12 +1294,26 @@ def run_mock_agent(state: AgentState) -> AgentState:
                 db = SessionLocal()
                 latest = db.query(Interaction).order_by(Interaction.date.desc()).first()
                 id_val = latest.id if latest else 1
+                if latest:
+                    temp = {
+                        "attendees": latest.attendees,
+                        "products_discussed": topics,
+                        "channel": latest.channel,
+                        "doctor_rating": latest.doctor_rating,
+                        "feedback": latest.feedback,
+                        "materials_shared": latest.materials_shared,
+                        "next_steps": latest.next_steps,
+                        "hcp_id": latest.hcp_id
+                    }
+                    notes_summary = generate_summary_from_data(temp)
+                else:
+                    notes_summary = last_message
                 db.close()
 
                 edit_res = edit_interaction.invoke({
                     "interaction_id": id_val,
                     "topics": topics,
-                    "notes": last_message
+                    "notes": notes_summary
                 })
                 edit_data = json.loads(edit_res)
                 response_text = "Understood. On a scale of 1 to 5, how would you rate your satisfaction with the doctor?"
@@ -1088,7 +1329,7 @@ def run_mock_agent(state: AgentState) -> AgentState:
 
                 log_res = log_interaction.invoke({
                     "hcp_id": hcp_id,
-                    "notes": last_message,
+                    "notes": "Feedback session for the doctor",
                     "date_str": date.today().strftime("%Y-%m-%d"),
                     "time_str": datetime.now().strftime("%I:%M %p")
                 })
@@ -1106,7 +1347,7 @@ def run_mock_agent(state: AgentState) -> AgentState:
                 log_res = log_interaction.invoke({
                     "hcp_id": hcp_id,
                     "hcp_name": hcp_name,
-                    "notes": last_message,
+                    "notes": f"Feedback session for {hcp_name}",
                     "date_str": date.today().strftime("%Y-%m-%d"),
                     "time_str": datetime.now().strftime("%I:%M %p")
                 })
@@ -1210,6 +1451,10 @@ def execute_tools(state: AgentState) -> Dict[str, Any]:
         # Inject HCP ID if missing from LLM arguments
         if "hcp_id" in tool_args and (tool_args["hcp_id"] is None or tool_args["hcp_id"] == 0):
             tool_args["hcp_id"] = state["hcp_id"]
+            
+        # Rewrite the notes argument to be the simplified summary of the whole chat
+        if tool_name in ["log_interaction", "edit_interaction"]:
+            tool_args["notes"] = get_simplified_chat_summary(messages, tool_args)
             
         # Execute tool
         selected_tool = tools_map.get(tool_name)
